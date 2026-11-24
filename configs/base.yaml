@@ -1,0 +1,127 @@
+project:
+  name: ecg_reliability_ptbxl
+  seed: 42
+
+data:
+  ptbxl_root: ${PTBXL_ROOT}
+  sampling_rate: 100
+  signal_length: 1000
+  num_leads: 12
+  target_labels: [NORM, MI, STTC, CD, HYP]
+  train_folds: [1, 2, 3, 4, 5, 6, 7, 8]
+  val_fold: 9
+  test_fold: 10
+  normalize_per_lead: true
+  filter_empty_targets: true
+  cache_dir: outputs/cache/signals
+  index_path: outputs/index/ptbxl_index.parquet
+  cache_manifest_path: outputs/cache/cache_manifest.parquet
+  debug_max_records: null
+
+training:
+  device: auto
+  batch_size: 64
+  eval_batch_size: 128
+  num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 2
+  pin_memory: true
+  non_blocking_transfer: true
+  epochs: 20
+  lr: 0.001
+  weight_decay: 0.0001
+  grad_clip_norm: 1.0
+  mixed_precision: true
+  amp_dtype: float16
+  early_stopping_patience: 5
+  deterministic: false
+  cudnn_benchmark: true
+  matmul_precision: high
+  compile_model: false
+  log_every_batches: 25
+  pos_weight_strategy: balanced
+
+model:
+  name: simple_cnn
+  num_classes: 5
+  dropout: 0.2
+  hidden_dim: 128
+  num_heads: 4
+  num_layers: 3
+
+xgboost:
+  n_estimators: 300
+  max_depth: 6
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
+  reg_lambda: 1.0
+  n_jobs: 4
+  tree_method: hist
+
+calibration:
+  methods: [scalar_temperature, vector_temperature, platt, isotonic]
+  num_bins: 15
+
+decision:
+  abstain_cost: 0.5
+  coverage_targets: [0.9, 0.95, 0.99]
+  harm_weights:
+    NORM: {fn: 1.0, fp: 1.0}
+    MI: {fn: 2.5, fp: 1.0}
+    STTC: {fn: 2.0, fp: 1.0}
+    CD: {fn: 2.0, fp: 1.0}
+    HYP: {fn: 2.0, fp: 1.0}
+
+robustness:
+  perturbations:
+    lead_dropout_single: {enabled: true}
+    lead_dropout_group:
+      enabled: true
+      groups: [limb, precordial]
+    gaussian_noise:
+      enabled: true
+      std: 0.02
+    baseline_wander:
+      enabled: true
+      amplitude: 0.05
+      frequency_hz: 0.33
+    amplitude_scaling:
+      enabled: true
+      scale_min: 0.9
+      scale_max: 1.1
+
+explainability:
+  methods: [integrated_gradients, gradient_input, occlusion]
+  num_samples: 32
+  occlusion_num_samples: 8
+  ig_steps: 32
+  occlusion_window: 50
+  occlusion_stride: 25
+
+external:
+  enabled: false
+  root_env: CHALLENGE2021_ROOT
+  source_root_envs:
+    georgia: GEORGIA_ROOT
+    chapman_shaoxing: CHAPMAN_SHAOXING_ROOT
+    ningbo: NINGBO_ROOT
+  cache_dir: outputs/external/cache
+  manifest_path: outputs/external/external_manifest.parquet
+  sources: [georgia, chapman_shaoxing]
+  sampling_rate: 100
+  signal_length: 1000
+  num_leads: 12
+  label_space: binary_abnormal
+  normal_snomed_codes: ["426783006"]
+  max_records_per_source: null
+  allow_sources:
+    georgia: true
+    chapman_shaoxing: true
+    ningbo: false
+  snomed_overlap_enabled: false
+  snomed_overlap_mapping_path: configs/snomed_overlap_mapping.yaml
+
+plotting:
+  dpi: 200
+  figsize: [10, 6]

@@ -1,0 +1,29 @@
+project:
+  name: ecg_reliability_ptbxl
+  seed: 42
+
+data:
+  debug_max_records: 256
+
+training:
+  batch_size: 16
+  eval_batch_size: 32
+  num_workers: 0
+  persistent_workers: false
+  prefetch_factor: null
+  epochs: 1
+  mixed_precision: false
+  deterministic: true
+  cudnn_benchmark: false
+  compile_model: false
+
+model:
+  name: simple_cnn
+
+explainability:
+  num_samples: 2
+  occlusion_num_samples: 1
+
+external:
+  enabled: false
+  max_records_per_source: 32

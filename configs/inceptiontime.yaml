@@ -1,0 +1,4 @@
+model:
+  name: inceptiontime
+  hidden_dim: 128
+  dropout: 0.2

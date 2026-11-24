@@ -1,0 +1,4 @@
+model:
+  name: resnet1d
+  hidden_dim: 128
+  dropout: 0.2
