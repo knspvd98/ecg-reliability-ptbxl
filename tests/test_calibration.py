@@ -56,3 +56,16 @@ def test_adaptive_ece_assigns_repeated_edges_once():
     y = np.array([[1, 0], [1, 1], [1, 1], [1, 0]])
     for bins in (1, 4, 15):
         np.testing.assert_allclose(classwise_ece(y, p, bins, adaptive=True), [0.2, 0.25])
+
+
+def test_binary_probabilities_match_float_metrics_and_are_order_invariant():
+    from ecg_reliability.evaluation.calibration_metrics import brier_score, classwise_ece
+
+    truth = np.array([[0, 1], [1, 0], [0, 1]])
+    predictions = np.array([[1, 1], [0, 0], [1, 0]])
+    for dtype in (bool, np.uint8, np.float32):
+        y, p = truth.astype(dtype), predictions.astype(dtype)
+        np.testing.assert_allclose(brier_score(y, p), [1, 1 / 3])
+        for adaptive in (False, True):
+            for rows in ([0, 1, 2], [2, 0, 1]):
+                np.testing.assert_allclose(classwise_ece(y[rows], p[rows], 3, adaptive), [1, 1 / 3])

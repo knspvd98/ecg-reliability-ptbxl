@@ -13,7 +13,7 @@ def _bin_edges(probabilities: np.ndarray, num_bins: int, adaptive: bool = False)
 
 def classwise_ece(y_true: np.ndarray, probabilities: np.ndarray, num_bins: int = 15, adaptive: bool = False) -> np.ndarray:
     y_true = np.asarray(y_true)
-    probabilities = np.asarray(probabilities)
+    probabilities = np.asarray(probabilities, dtype=float)
     if y_true.ndim != 2 or y_true.shape != probabilities.shape or not y_true.size:
         raise ValueError("Expected matching, non-empty sample-by-label arrays")
     if num_bins < 1 or not np.isin(y_true, [0, 1]).all():
@@ -33,7 +33,8 @@ def classwise_ece(y_true: np.ndarray, probabilities: np.ndarray, num_bins: int =
 
 
 def brier_score(y_true: np.ndarray, probabilities: np.ndarray) -> np.ndarray:
-    return np.mean((probabilities - y_true) ** 2, axis=0)
+    residuals = np.asarray(probabilities, dtype=float) - y_true
+    return np.mean(residuals ** 2, axis=0)
 
 
 def reliability_bins(y_true: np.ndarray, probabilities: np.ndarray, class_index: int, num_bins: int = 15) -> list[dict[str, float]]:
