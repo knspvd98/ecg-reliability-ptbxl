@@ -12,20 +12,23 @@ def _bin_edges(probabilities: np.ndarray, num_bins: int, adaptive: bool = False)
 
 
 def classwise_ece(y_true: np.ndarray, probabilities: np.ndarray, num_bins: int = 15, adaptive: bool = False) -> np.ndarray:
+    y_true = np.asarray(y_true)
+    probabilities = np.asarray(probabilities)
+    if y_true.ndim != 2 or y_true.shape != probabilities.shape or not y_true.size:
+        raise ValueError("Expected matching, non-empty sample-by-label arrays")
+    if num_bins < 1 or not np.isin(y_true, [0, 1]).all():
+        raise ValueError("Positive bin count and binary targets are required")
+    if not np.isfinite(probabilities).all() or ((probabilities < 0) | (probabilities > 1)).any():
+        raise ValueError("Expected finite probabilities in [0, 1]")
     eces = []
     for idx in range(y_true.shape[1]):
         y = y_true[:, idx]
         p = probabilities[:, idx]
         edges = _bin_edges(p, num_bins=num_bins, adaptive=adaptive)
-        ece = 0.0
-        for left, right in zip(edges[:-1], edges[1:], strict=True):
-            mask = (p >= left) & (p <= right) if right == edges[-1] else (p >= left) & (p < right)
-            if not np.any(mask):
-                continue
-            acc = y[mask].mean()
-            conf = p[mask].mean()
-            ece += abs(acc - conf) * (mask.mean())
-        eces.append(float(ece))
+        # Assign ties to exactly one bin, including a repeated maximum edge.
+        bins = np.searchsorted(edges[1:-1], p, side="right")
+        residual_sums = np.bincount(bins, weights=y - p, minlength=num_bins)
+        eces.append(np.abs(residual_sums).sum() / p.size)
     return np.asarray(eces, dtype=np.float32)
 
 

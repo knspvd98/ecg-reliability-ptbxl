@@ -47,3 +47,12 @@ def test_platt_handles_constant_class() -> None:
     calibrator = fit_calibrator("platt", logits, labels)
     probs = apply_calibrator(calibrator, logits)
     assert np.allclose(probs[:, 0], 1.0)
+
+
+def test_adaptive_ece_assigns_repeated_edges_once():
+    from ecg_reliability.evaluation.calibration_metrics import classwise_ece
+
+    p = np.array([[0.8, 0], [0.8, 1], [0.8, 1], [0.8, 1]])
+    y = np.array([[1, 0], [1, 1], [1, 1], [1, 0]])
+    for bins in (1, 4, 15):
+        np.testing.assert_allclose(classwise_ece(y, p, bins, adaptive=True), [0.2, 0.25])
