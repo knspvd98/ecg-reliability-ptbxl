@@ -14,6 +14,7 @@ from ecg_reliability.calibration.apply import (
     save_calibrator,
     select_best_method,
 )
+from ecg_reliability.evaluation.calibration_metrics import compute_calibration_report
 from ecg_reliability.evaluation.reports import save_json
 from ecg_reliability.runtime import (
     calibration_dir,
@@ -36,17 +37,27 @@ def main() -> None:
     val = load_prediction_arrays(model_name, "val", namespace="raw")
     test = load_prediction_arrays(model_name, "test", namespace="raw")
     methods = list(config["calibration"]["methods"])
-    results = evaluate_calibration_methods(methods, val["logits"], val["labels"], num_bins=int(config["calibration"]["num_bins"]))
+    num_bins = int(config["calibration"]["num_bins"])
+    results = evaluate_calibration_methods(methods, val["logits"], val["labels"], num_bins=num_bins)
     best_method = select_best_method(results)
     cal_dir = calibration_dir(model_name)
     cal_dir.mkdir(parents=True, exist_ok=True)
     reports = {method: payload["report"] for method, payload in results.items()}
     reports["best_method"] = best_method
     save_json(cal_dir / "reports.json", reports)
+
+    # Also compute held-out test calibration reports (evaluation only — never used for fitting or selection)
+    test_reports: dict[str, object] = {
+        "raw": compute_calibration_report(test["labels"], test["probabilities"], num_bins=num_bins),
+        "selected_method_from_val": best_method,
+    }
+
     leakage_report = {
         "calibration_fit_split": "val",
+        "calibration_selection_split": "val",
         "calibration_applied_splits": ["val", "test"],
         "test_used_for_fitting": False,
+        "test_used_for_method_selection": False,
         "val_n": int(len(val["labels"])),
         "test_n": int(len(test["labels"])),
         "methods": methods,
@@ -63,12 +74,15 @@ def main() -> None:
         method_dir.mkdir(parents=True, exist_ok=True)
         for split_name, bundle in {"val": val, "test": test}.items():
             probs = apply_calibrator(payload["calibrator"], bundle["logits"])
+            if split_name == "test":
+                test_reports[method] = compute_calibration_report(bundle["labels"], probs, num_bins=num_bins)
             split_dir = method_dir / split_name
             split_dir.mkdir(parents=True, exist_ok=True)
             np.save(split_dir / "probabilities.npy", probs.astype(np.float32))
             np.save(split_dir / "labels.npy", bundle["labels"].astype(np.float32))
             np.save(split_dir / "logits.npy", bundle["logits"].astype(np.float32))
             np.save(split_dir / "ecg_ids.npy", bundle["ecg_ids"].astype(np.int64))
+    save_json(cal_dir / "test_reports.json", test_reports)
     print(f"Best calibration method for {model_name}: {best_method}")
 
 

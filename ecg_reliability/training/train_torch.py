@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from ecg_reliability.data.dataset import CachedECGDataset, manifest_targets
+from ecg_reliability.evaluation.calibration_metrics import compute_calibration_report
 from ecg_reliability.evaluation.metrics import compute_classification_metrics
 from ecg_reliability.evaluation.thresholding import sigmoid
 from ecg_reliability.models.factory import build_torch_model
@@ -26,7 +27,7 @@ from ecg_reliability.performance.runtime_profile import (
     summarize_torch_environment,
     write_runtime_report,
 )
-from ecg_reliability.training.checkpoints import save_checkpoint
+from ecg_reliability.training.checkpoints import load_checkpoint, save_checkpoint
 from ecg_reliability.training.losses import compute_pos_weight, make_bce_loss
 
 
@@ -138,7 +139,7 @@ def predict_torch_model(
     config: dict[str, Any] | None = None,
     max_batches: int | None = None,
     return_runtime: bool = False,
-) -> dict[str, np.ndarray]:
+) -> dict[str, Any]:
     model.eval()
     config = config or {"training": {}}
     non_blocking = bool(config["training"].get("non_blocking_transfer", False))
@@ -161,7 +162,7 @@ def predict_torch_model(
     logits_np = np.concatenate(logits_all, axis=0)
     labels_np = np.concatenate(labels_all, axis=0)
     probs_np = sigmoid(logits_np)
-    output = {
+    output: dict[str, Any] = {
         "ecg_ids": np.asarray(ecg_ids, dtype=np.int64),
         "logits": logits_np,
         "probabilities": probs_np,
@@ -182,6 +183,7 @@ def fit_torch_model(
     output_dir: str | Path,
     limit_train: int | None = None,
     limit_val: int | None = None,
+    resume_from: str | Path | None = None,
 ) -> dict[str, Any]:
     device = resolve_device(config["training"]["device"])
     runtime_flags = configure_torch_runtime(config)
@@ -201,29 +203,60 @@ def fit_torch_model(
     )
     use_amp = bool(config["training"].get("mixed_precision", False)) and device.type == "cuda"
     scaler = _make_grad_scaler(use_amp)
+
+    start_epoch = 0
     best_score = float("-inf")
     best_epoch = 0
     best_path = Path(output_dir) / "best.pt"
     history: list[dict[str, Any]] = []
-    stage_timings: dict[str, float] = {}
     epochs_without_improvement = 0
+
+    if resume_from is not None and Path(resume_from).exists():
+        resumed = load_checkpoint(resume_from, map_location=device)
+        model.load_state_dict(resumed["state_dict"])
+        if "optimizer_state_dict" in resumed:
+            optimizer.load_state_dict(resumed["optimizer_state_dict"])
+        start_epoch = int(resumed.get("epoch", 0))
+        history = list(resumed.get("history", []))
+        for item in history:
+            score = float(item.get("val_macro_auroc", float("-inf")))
+            if score > best_score:
+                best_score = score
+                best_epoch = int(item.get("epoch", 0))
+
+    stage_timings: dict[str, float] = {}
     patience = int(config["training"].get("early_stopping_patience", 0))
+    total_epochs = int(config["training"]["epochs"])
     with StageTimer("fit_total", stage_timings):
-        for epoch in range(int(config["training"]["epochs"])):
+        for epoch in range(start_epoch, total_epochs):
             with StageTimer(f"epoch_{epoch + 1}_train", stage_timings):
                 train_stats = run_epoch(model, train_loader, criterion, optimizer, device, config, scaler=scaler)
             with StageTimer(f"epoch_{epoch + 1}_val", stage_timings):
                 val_outputs = predict_torch_model(model, val_loader, device, config=config, return_runtime=True)
             val_metrics = compute_classification_metrics(val_outputs["labels"], val_outputs["probabilities"])
+            val_cal = compute_calibration_report(val_outputs["labels"], val_outputs["probabilities"])
             val_score = float(np.nan_to_num(val_metrics["macro_auroc"], nan=-1.0))
+            val_auprc = float(np.nan_to_num(val_metrics["macro_auprc"], nan=0.0))
+            val_loss = float(
+                criterion(
+                    torch.tensor(val_outputs["logits"], dtype=torch.float32, device=device),
+                    torch.tensor(val_outputs["labels"], dtype=torch.float32, device=device),
+                )
+                .detach()
+                .cpu()
+            )
             epoch_record = {
                 "epoch": epoch + 1,
                 "train_loss": train_stats["loss"],
+                "val_loss": val_loss,
                 "train_records_per_second": train_stats["records_per_second"],
                 "train_batches_per_second": train_stats["batches_per_second"],
                 "val_records_per_second": val_outputs["runtime"]["records_per_second"],
                 "val_batches_per_second": val_outputs["runtime"]["batches_per_second"],
                 "val_macro_auroc": val_score,
+                "val_macro_auprc": val_auprc,
+                "val_macro_ece": float(val_cal["macro_ece"]),
+                "val_macro_brier": float(val_cal["macro_brier"]),
             }
             history.append(epoch_record)
             checkpoint = {
@@ -231,6 +264,7 @@ def fit_torch_model(
                 "model_name": config["model"]["name"],
                 "config": config,
                 "state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
                 "history": history,
             }
             save_checkpoint(Path(output_dir) / "last.pt", checkpoint)
@@ -243,9 +277,16 @@ def fit_torch_model(
                 epochs_without_improvement += 1
                 if patience > 0 and epochs_without_improvement >= patience:
                     break
+
+    param_count = int(sum(p.numel() for p in model.parameters()))
+    trainable_params = int(sum(p.numel() for p in model.parameters() if p.requires_grad))
     runtime_report = {
         **summarize_torch_environment(device),
         "device": str(device),
+        "model_name": str(config["model"]["name"]),
+        "total_parameters": param_count,
+        "trainable_parameters": trainable_params,
+        "resumed_from": str(resume_from) if resume_from else None,
         "mixed_precision_requested": bool(config["training"].get("mixed_precision", False)),
         "mixed_precision_active": use_amp,
         "amp_dtype": str(_amp_dtype_from_config(config)),
@@ -289,7 +330,9 @@ def fit_torch_model(
     write_runtime_report(runtime_report_path, runtime_report)
     return {
         "best_checkpoint": str(best_path),
+        "last_checkpoint": str(Path(output_dir) / "last.pt"),
         "history": history,
         "best_epoch": best_epoch,
+        "total_parameters": param_count,
         "runtime_report_path": str(runtime_report_path),
     }

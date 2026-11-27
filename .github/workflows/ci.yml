@@ -39,4 +39,6 @@ jobs:
         run: pytest
 
       - name: Run synthetic pipeline smoke test
-        run: bash runpod/smoke_run.sh
+        run: |
+          bash runpod/smoke_run.sh
+          ecg-reliability --help

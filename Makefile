@@ -1,13 +1,22 @@
 PYTHON ?= python3
 CONFIG ?= configs/base.yaml
 
-.PHONY: install test prepare cache smoke xgboost train eval calibrate selective robustness xai figures summary
+.PHONY: install test lint prepare cache smoke suite workbench xgboost train eval calibrate selective robustness xai figures summary
 
 install:
-	$(PYTHON) -m pip install -r requirements.txt
+	$(PYTHON) -m pip install -e ".[dev]"
+
+lint:
+	ruff check .
 
 test:
 	$(PYTHON) -m pytest
+
+suite:
+	ecg-reliability run-suite --config configs/debug.yaml --tier synthetic_smoke
+
+workbench:
+	ecg-reliability workbench --host 127.0.0.1 --port 8501
 
 prepare:
 	$(PYTHON) scripts/00_prepare_ptbxl.py --config $(CONFIG)

@@ -16,9 +16,9 @@ htmlcov/
 .env.*
 !.env.example
 
-outputs/
-data/
-datasets/
+/outputs/
+/data/
+/datasets/
 *.pt
 *.pth
 *.ckpt
