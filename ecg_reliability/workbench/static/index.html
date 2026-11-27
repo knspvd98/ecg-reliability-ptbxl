@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ECG Reliability Research Workbench — PTB-XL</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="instrument-header">
+    <div class="header-left">
+      <div class="brand-mark" aria-hidden="true">ECG</div>
+      <div>
+        <h1 class="brand-title">ECG Reliability Research Workbench</h1>
+        <p class="brand-subtitle">Multi-Label Calibration, Selective Prediction, Robustness &amp; XAI Analysis Instrument</p>
+      </div>
+    </div>
+    <div class="header-controls">
+      <label class="control-inline">
+        <span>Active Run</span>
+        <select id="globalRunSelect" class="mono-select"></select>
+      </label>
+      <span id="tierBadge" class="badge badge-neutral">NO RUN</span>
+      <span class="badge badge-warning" title="Research software only. Not cleared or intended for clinical diagnosis or patient care.">RESEARCH ONLY — NOT A MEDICAL DEVICE</span>
+    </div>
+  </header>
+
+  <nav class="workspace-nav" role="tablist" aria-label="Research Workspaces">
+    <button class="nav-tab active" data-tab="signals" role="tab" aria-selected="true">1. Signal Explorer</button>
+    <button class="nav-tab" data-tab="experiments" role="tab" aria-selected="false">2. Experiment Explorer</button>
+    <button class="nav-tab" data-tab="reliability" role="tab" aria-selected="false">3. Reliability Analysis</button>
+    <button class="nav-tab" data-tab="robustness" role="tab" aria-selected="false">4. Robustness Lab</button>
+    <button class="nav-tab" data-tab="explainability" role="tab" aria-selected="false">5. Explainability &amp; Failures</button>
+  </nav>
+
+  <main class="workspace-main">
+    <div id="globalAlert" class="alert-banner hidden"></div>
+
+    <!-- 1. SIGNAL EXPLORER -->
+    <section id="tab-signals" class="workspace-panel active">
+      <div class="split-layout sidebar-left">
+        <aside class="panel side-panel">
+          <div class="panel-header">
+            <h2>Record &amp; Display Controls</h2>
+          </div>
+          <div class="panel-body stack">
+            <label class="field">
+              <span>Dataset Split</span>
+              <select id="sigSplitSelect">
+                <option value="test" selected>Test (Fold 10)</option>
+                <option value="val">Validation (Fold 9)</option>
+                <option value="train">Train (Folds 1–8)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>ECG Record</span>
+              <select id="sigRecordSelect" class="mono-select"></select>
+            </label>
+            <div class="field-row">
+              <label class="field">
+                <span>Layout</span>
+                <select id="sigLayoutSelect">
+                  <option value="stacked" selected>12×1 Aligned (10 s)</option>
+                  <option value="grid4x3">4×3 Clinical</option>
+                  <option value="single">Single Lead Focus</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Grid Theme</span>
+                <select id="sigThemeSelect">
+                  <option value="paper" selected>ECG Paper (25 mm/s)</option>
+                  <option value="scope">Oscilloscope Dark</option>
+                </select>
+              </label>
+            </div>
+            <label class="field" id="singleLeadField">
+              <span>Focus Lead</span>
+              <select id="sigLeadSelect"></select>
+            </label>
+            <div class="field">
+              <span>Time Zoom: <strong id="sigZoomLabel" class="mono">1.0×</strong></span>
+              <input id="sigZoomRange" type="range" min="1" max="8" step="0.5" value="1" />
+            </div>
+            <div class="field">
+              <span>Window Start: <strong id="sigPanLabel" class="mono">0.00 s</strong></span>
+              <input id="sigPanRange" type="range" min="0" max="9" step="0.05" value="0" />
+            </div>
+
+            <hr class="divider" />
+            <h3 class="section-kicker">Live Perturbation Overlay</h3>
+            <p class="hint">Applies actual Python perturbation functions in <code>ecg_reliability.robustness.perturbations</code> and re-runs the saved model.</p>
+            <label class="field">
+              <span>Perturbation</span>
+              <select id="sigPerturbType">
+                <option value="none">None (Clean Signal)</option>
+                <option value="baseline_wander">Baseline Wander (Low-Freq Drift)</option>
+                <option value="powerline_interference">Power-Line Interference (50/60 Hz)</option>
+                <option value="muscle_noise">Muscle Noise (Band-Limited EMG)</option>
+                <option value="electrode_motion">Electrode Motion (Transient Artifact)</option>
+                <option value="gaussian_noise">Gaussian Noise (Broadband)</option>
+                <option value="lead_dropout_single">Lead Dropout (Single Lead)</option>
+                <option value="lead_dropout_group">Lead Dropout (Anatomical Group)</option>
+                <option value="amplitude_scaling">Amplitude Scaling (Gain Shift)</option>
+              </select>
+            </label>
+            <div id="sigPerturbParams" class="stack-sm"></div>
+            <div class="btn-row">
+              <button id="sigApplyPerturbBtn" class="btn btn-primary">Apply &amp; Probe Model</button>
+              <button id="sigResetPerturbBtn" class="btn">Reset</button>
+            </div>
+          </div>
+        </aside>
+
+        <div class="stack main-column">
+          <div class="panel">
+            <div class="panel-header between">
+              <div>
+                <h2 id="sigTitle">12-Lead Waveform Viewer</h2>
+                <span id="sigMetaStrip" class="meta-strip mono"></span>
+              </div>
+              <div id="sigCaliperReadout" class="caliper-readout mono">Hover waveform for caliper (t, amplitude)</div>
+            </div>
+            <div class="canvas-wrap">
+              <canvas id="signalCanvas" width="1100" height="620"></canvas>
+            </div>
+            <div class="canvas-footer mono">
+              <span><i class="swatch swatch-clean"></i> Original Signal</span>
+              <span><i class="swatch swatch-pert"></i> Perturbed Signal</span>
+              <span id="sigUnitNote">Units: —</span>
+              <span class="muted">Drag horizontally on waveform to pan · Wheel to zoom</span>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="panel">
+              <div class="panel-header">
+                <h2>Model Response &amp; Selective Decision</h2>
+              </div>
+              <div id="sigPredictionPanel" class="panel-body"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header between">
+                <h2>Signal Quality Indicators (SQI)</h2>
+                <span id="sigSqiSummary" class="mono muted"></span>
+              </div>
+              <div id="sigSqiPanel" class="panel-body table-scroll"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. EXPERIMENT EXPLORER -->
+    <section id="tab-experiments" class="workspace-panel">
+      <div class="stack">
+        <div class="panel">
+          <div class="panel-header between">
+            <h2>Recorded Research Runs (Completed, Failed &amp; Interrupted)</h2>
+            <button id="refreshRunsBtn" class="btn">Refresh Runs</button>
+          </div>
+          <div id="runsTableWrap" class="panel-body table-scroll"></div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Training History &amp; Convergence</h2>
+            </div>
+            <div id="expHistoryChart" class="panel-body chart-box"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Run Provenance &amp; Hardware/Software Snapshot</h2>
+            </div>
+            <div id="expProvenancePanel" class="panel-body"></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Paired Model Comparisons (Patient-Cluster Bootstrap)</h2>
+            </div>
+            <div id="expPairedPanel" class="panel-body table-scroll"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header between">
+              <h2>Run Artifact Inspector</h2>
+              <select id="artifactFileSelect" class="mono-select"></select>
+            </div>
+            <div class="panel-body">
+              <pre id="artifactContentPre" class="code-viewer">Select an artifact file to inspect.</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. RELIABILITY ANALYSIS -->
+    <section id="tab-reliability" class="workspace-panel">
+      <div class="stack">
+        <div id="relKpiStrip" class="kpi-strip"></div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-header between">
+              <h2>Reliability Diagram (Held-Out Test Split)</h2>
+              <select id="relClassSelect" class="mono-select">
+                <option value="NORM">NORM</option>
+                <option value="MI" selected>MI</option>
+                <option value="STTC">STTC</option>
+                <option value="CD">CD</option>
+                <option value="HYP">HYP</option>
+              </select>
+            </div>
+            <div id="relDiagramChart" class="panel-body chart-box"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Risk–Coverage &amp; Expected Harm with Abstention</h2>
+            </div>
+            <div id="relRiskCoverageChart" class="panel-body chart-box"></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Predicted Confidence Distribution (Positives vs Negatives)</h2>
+            </div>
+            <div id="relConfidenceChart" class="panel-body chart-box"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Per-Class Discrimination &amp; Calibration Metrics</h2>
+            </div>
+            <div id="relClassTable" class="panel-body table-scroll"></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Calibration Method Comparison (Val Fit vs Held-Out Test)</h2>
+            </div>
+            <div id="relCalMethodsTable" class="panel-body table-scroll"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Statistical Confidence Intervals (Bootstrap Provenance)</h2>
+            </div>
+            <div id="relBootstrapTable" class="panel-body table-scroll"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. ROBUSTNESS LAB -->
+    <section id="tab-robustness" class="workspace-panel">
+      <div class="stack">
+        <div id="robCaveatBanner" class="caveat-box"></div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-header between">
+              <h2>Perturbation Impact Across Severity Levels</h2>
+              <select id="robMetricSelect" class="mono-select">
+                <option value="delta_macro_auroc">Δ Macro AUROC</option>
+                <option value="delta_macro_auprc">Δ Macro AUPRC</option>
+                <option value="delta_macro_ece">Δ Macro ECE</option>
+                <option value="delta_macro_brier">Δ Macro Brier</option>
+              </select>
+            </div>
+            <div id="robBarChart" class="panel-body chart-box"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Decision-Layer Robustness (Expected Harm &amp; Abstention Shift)</h2>
+            </div>
+            <div id="robDecisionTable" class="panel-body table-scroll"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Complete Perturbation Stress-Test Matrix</h2>
+          </div>
+          <div id="robFullTable" class="panel-body table-scroll"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h2>MIT-BIH Noise Stress Test Database (NSTDB) Empirical Reference</h2>
+          </div>
+          <div id="robNstdbPanel" class="panel-body"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. EXPLAINABILITY & FAILURES -->
+    <section id="tab-explainability" class="workspace-panel">
+      <div class="stack">
+        <div class="panel">
+          <div class="panel-header between">
+            <h2>12-Lead Attribution Overlay &amp; Lead Importance</h2>
+            <div class="header-inline-controls">
+              <label class="control-inline">
+                <span>ECG</span>
+                <select id="xaiRecordSelect" class="mono-select"></select>
+              </label>
+              <label class="control-inline">
+                <span>Target Class</span>
+                <select id="xaiLabelSelect" class="mono-select">
+                  <option value="NORM">NORM</option>
+                  <option value="MI">MI</option>
+                  <option value="STTC">STTC</option>
+                  <option value="CD">CD</option>
+                  <option value="HYP">HYP</option>
+                </select>
+              </label>
+              <label class="control-inline">
+                <span>Method</span>
+                <select id="xaiMethodSelect" class="mono-select">
+                  <option value="ig" selected>Integrated Gradients</option>
+                  <option value="gx">Gradient × Input</option>
+                  <option value="occlusion">Occlusion (if saved)</option>
+                </select>
+              </label>
+              <button id="xaiLoadBtn" class="btn btn-primary">Compute / Load</button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="xai-grid">
+              <div>
+                <div class="canvas-wrap">
+                  <canvas id="xaiCanvas" width="900" height="500"></canvas>
+                </div>
+                <div class="canvas-footer mono">
+                  <span><i class="swatch swatch-pos-attr"></i> Positive Attribution (pushes logit up)</span>
+                  <span><i class="swatch swatch-neg-attr"></i> Negative Attribution (pushes logit down)</span>
+                  <span id="xaiSourceNote" class="muted"></span>
+                </div>
+              </div>
+              <div id="xaiLeadImpChart" class="chart-box"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Attribution Sanity Checks (Adebayo Randomization &amp; Deletion Faithfulness)</h2>
+            </div>
+            <div id="xaiSanityPanel" class="panel-body"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Method Definitions &amp; Scientific Limitations</h2>
+            </div>
+            <div id="xaiGuidesPanel" class="panel-body"></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Misclassified &amp; High-Confidence Failure Cases</h2>
+            </div>
+            <div id="xaiFailuresPanel" class="panel-body table-scroll"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Cross-Model Disagreement Cases</h2>
+            </div>
+            <div id="xaiDisagreementPanel" class="panel-body table-scroll"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/ecg_canvas.js"></script>
+  <script src="/charts.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
