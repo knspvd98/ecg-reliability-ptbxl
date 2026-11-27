@@ -70,7 +70,7 @@ The platform strictly separates three execution tiers so engineering smoke runs 
 
 | Execution Tier | Purpose | Claim Eligible |
 | --- | --- | --- |
-| `synthetic_smoke` | Fast CPU verification with synthetic PQRST 12-lead waveforms and patient-clustered folds | **No** (explicitly badged in manifests & UI) |
+| `synthetic_smoke` | Fast CPU verification with synthetic PQRST 12-lead waveforms and patient-clustered folds | **No** (marked in the manifests and workbench status bar) |
 | `bounded_real` | Bounded subset verification on real PTB-XL v1.0.3 records | **No** (smoke/preflight gate only) |
 | `full_campaign` | Complete official PTB-XL folds `1–8` (train), `9` (val), `10` (test) with artifact validation | **Yes** (subject to claim checks & clinical limitations) |
 
@@ -89,22 +89,29 @@ Core methodological invariants enforced in code:
 
 The built-in local workbench (`ecg-reliability workbench`) reads real experimental artifacts from `outputs/runs/` and executes live perturbation, signal-quality (SQI), and model inference probes against saved checkpoints—with zero external paid services or fabricated outputs.
 
-### Signal Explorer (12-Lead Aligned Viewer, Live Perturbation Overlay & SQI)
-![Signal Explorer showing 12 aligned ECG leads on standard 25 mm/s paper grid with live perturbation overlay, model response, and per-lead SQI](docs/screenshots/01_signal_explorer.png)
+### Signal Explorer
 
-### Experiment Explorer (Run Registry, Training Convergence, Provenance & Paired Bootstrap)
-![Experiment Explorer showing completed runs across model families, training curves, provenance metadata, and paired model comparisons](docs/screenshots/02_experiment_explorer.png)
+Zoom with the mouse wheel, drag the waveform or use the overview strip to pan, and use the caliper to measure sample intervals and amplitude differences. The inspector includes record provenance, model probabilities, live perturbations, and per-lead signal quality.
 
-### Reliability Analysis (Reliability Diagrams, Risk–Coverage Curves, Confidence Distributions & CIs)
-![Reliability Analysis workspace showing held-out reliability diagram, risk-coverage curve, confidence distributions, calibration methods, and patient-cluster bootstrap CIs](docs/screenshots/03_reliability_analysis.png)
+![Twelve aligned ECG leads with a live baseline-wander overlay, zoom overview, and perturbation telemetry](docs/screenshots/01_signal_explorer.png)
 
-### Robustness Laboratory (Multi-Severity Perturbation Deltas & MIT-BIH NSTDB Reference)
-![Robustness Laboratory workspace comparing multi-severity perturbation deltas across discrimination, calibration, and selective decision harm](docs/screenshots/04_robustness_lab.png)
+### Experiment Explorer
 
-### Explainability & Failure Analysis (Attribution Overlays, Adebayo & Deletion Sanity Checks, Model Disagreement)
-![Explainability and Failure Analysis workspace showing 12-lead Integrated Gradients overlay, lead importance, randomization and deletion sanity checks, and cross-model disagreement](docs/screenshots/05_explainability_failures.png)
+![Experiment registry with completed runs, training convergence, and the selected run's provenance](docs/screenshots/02_experiment_explorer.png)
 
-*Note: Screenshots above were captured directly from the live local workbench running on `synthetic_smoke` multi-model artifacts (`SYNTHETIC SMOKE DATA` badge visible in the header).*
+### Reliability Analysis
+
+![Held-out reliability diagram with adaptive bins and a sample-count tooltip alongside the saved risk–coverage policy, prediction distributions, and per-class metrics](docs/screenshots/03_reliability_analysis.png)
+
+### Robustness Lab
+
+![Perturbation deltas and stress-test matrix alongside a live waveform, signal quality, and model-response probe](docs/screenshots/04_robustness_lab.png)
+
+### Explainability and Failure Analysis
+
+![Signed Integrated Gradients on a selected failure with lead importance, saved sanity checks, and failure navigation](docs/screenshots/05_explainability_failures.png)
+
+*Screenshots were captured in the live local workbench using saved `synthetic_smoke` runs. The status bar identifies the synthetic data. The displayed metrics are for engineering verification only.*
 
 ---
 

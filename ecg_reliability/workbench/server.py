@@ -94,7 +94,15 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     self._send_json(da.get_signal_detail(run_id, ecg_id))
                     return
                 if sub == "reliability":
-                    self._send_json(da.get_reliability_analysis(run_id))
+                    cal_method = query.get("method", [None])[0]
+                    binning = query.get("binning", ["uniform"])[0]
+                    self._send_json(
+                        da.get_reliability_analysis(
+                            run_id,
+                            calibration_method=cal_method,
+                            binning=binning,
+                        )
+                    )
                     return
                 if sub == "robustness":
                     self._send_json(da.get_robustness_analysis(run_id))

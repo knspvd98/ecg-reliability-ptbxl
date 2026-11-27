@@ -37,13 +37,21 @@ def brier_score(y_true: np.ndarray, probabilities: np.ndarray) -> np.ndarray:
     return np.mean(residuals ** 2, axis=0)
 
 
-def reliability_bins(y_true: np.ndarray, probabilities: np.ndarray, class_index: int, num_bins: int = 15) -> list[dict[str, float]]:
+def reliability_bins(
+    y_true: np.ndarray,
+    probabilities: np.ndarray,
+    class_index: int,
+    num_bins: int = 15,
+    *,
+    adaptive: bool = False,
+) -> list[dict[str, float]]:
     y = y_true[:, class_index]
     p = probabilities[:, class_index]
-    edges = np.linspace(0.0, 1.0, num_bins + 1)
+    edges = _bin_edges(p, num_bins=num_bins, adaptive=adaptive)
+    bin_ids = np.searchsorted(edges[1:-1], p, side="right")
     bins: list[dict[str, float]] = []
-    for left, right in zip(edges[:-1], edges[1:], strict=True):
-        mask = (p >= left) & (p <= right if right == edges[-1] else p < right)
+    for index, (left, right) in enumerate(zip(edges[:-1], edges[1:], strict=True)):
+        mask = (bin_ids == index) & (p >= edges[0]) & (p <= edges[-1])
         if not np.any(mask):
             bins.append({"bin_left": float(left), "bin_right": float(right), "accuracy": float("nan"), "confidence": float("nan"), "count": 0})
             continue

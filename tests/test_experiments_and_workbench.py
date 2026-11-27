@@ -4,6 +4,7 @@ import json
 import threading
 import urllib.request
 
+import numpy as np
 import pytest
 
 from ecg_reliability.config import load_config
@@ -147,6 +148,26 @@ def test_end_to_end_benchmark_and_live_workbench_api(tmp_path) -> None:
         assert rel["reliability_bins"] is not None
         assert rel["bootstrap_ci"] is not None
 
+        raw_test_dir = runs_root / cnn_run_id / "predictions" / "raw" / "test"
+        n_test = len(np.load(raw_test_dir / "labels.npy"))
+        rel_adaptive = _http_json(f"{base_url}/api/runs/{cnn_run_id}/reliability?method=raw&binning=adaptive")
+        assert rel_adaptive["binning"] == "adaptive"
+        assert rel_adaptive["active_calibration_method"] == "raw"
+        for bins in rel_adaptive["reliability_bins"]["per_class"].values():
+            assert sum(b["count"] for b in bins["raw"]) == n_test
+            assert bins["raw"] == bins["calibrated"]
+
+        # Verify redesigned workbench shell & static assets serve cleanly without numbered tabs or badge bloat
+        with urllib.request.urlopen(f"{base_url}/", timeout=10) as html_resp:
+            html = html_resp.read().decode("utf-8")
+        assert "Research software only — not a medical device" in html
+        assert "1. Signal Explorer" not in html
+        assert "SYNTHETIC SMOKE DATA" not in html
+        for asset in ("/styles.css", "/ecg_canvas.js", "/charts.js", "/app.js"):
+            with urllib.request.urlopen(f"{base_url}{asset}", timeout=10) as asset_resp:
+                assert asset_resp.status == 200
+                assert len(asset_resp.read()) > 500
+
         rob = _http_json(f"{base_url}/api/runs/{cnn_run_id}/robustness")
         assert rob["available"] is True
         assert len(rob["results"]["delta_summary"]) >= 10
@@ -155,6 +176,21 @@ def test_end_to_end_benchmark_and_live_workbench_api(tmp_path) -> None:
         assert xai["selected_attribution"] is not None
         assert len(xai["selected_attribution"]["lead_importance"]) == 12
         assert xai["failure_analysis"] is not None
+
+        occlusion_path = runs_root / cnn_run_id / "explanations" / f"ecg_{ecg_id}_mi_occlusion.npy"
+        occlusion_path.unlink(missing_ok=True)
+        occlusion = _http_json(f"{base_url}/api/runs/{cnn_run_id}/explainability?ecg_id={ecg_id}&target_label=MI&method=occlusion")
+        attribution = occlusion["selected_attribution"]
+        assert attribution["method"] == "occlusion"
+        assert attribution["source"] == "computed_on_demand_from_checkpoint"
+        assert not np.allclose(attribution["attribution"], xai["selected_attribution"]["attribution"])
+
+        (runs_root / cnn_run_id / "predictions" / "calibrated" / "platt" / "test" / "labels.npy").unlink()
+        missing = _http_json(f"{base_url}/api/runs/{cnn_run_id}/reliability?method=platt&binning=adaptive")
+        assert missing["active_calibration_method"] == "platt"
+        assert missing["confidence_distributions"] == {}
+        assert missing["reliability_bins"]["per_class"]["MI"]["raw"]
+        assert missing["reliability_bins"]["per_class"]["MI"]["calibrated"] is None
 
         comps_api = _http_json(f"{base_url}/api/comparisons")
         assert comps_api["paired_comparisons"] is not None

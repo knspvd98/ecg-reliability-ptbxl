@@ -10,6 +10,7 @@ import pandas as pd
 import torch
 
 from ecg_reliability.calibration.apply import apply_calibrator, load_calibrator
+from ecg_reliability.config import VALID_CALIBRATION_METHODS
 from ecg_reliability.data.features import compute_engineered_features, compute_signal_quality_indicators
 from ecg_reliability.data.labels import TARGET_LABELS
 from ecg_reliability.data.preprocessing import DISPLAY_12_LEAD_NAMES
@@ -21,6 +22,7 @@ from ecg_reliability.evaluation.thresholding import sigmoid
 from ecg_reliability.experiments.registry import DEFAULT_RUNS_ROOT, list_runs, load_run_manifest
 from ecg_reliability.explainability.gradient_input import compute_gradient_x_input
 from ecg_reliability.explainability.integrated_gradients import compute_integrated_gradients
+from ecg_reliability.explainability.occlusion import compute_occlusion
 from ecg_reliability.io import read_table
 from ecg_reliability.models.xgboost_baseline import MultiLabelXGBoost
 from ecg_reliability.robustness.perturbations import MIT_BIH_NSTDB_REFERENCE, apply_perturbation
@@ -178,23 +180,20 @@ class WorkbenchDataAccess:
         best_cal = (manifest.get("metrics") or {}).get("selected_calibration_method")
         raw_dir = run_dir / "predictions" / "raw" / "test"
         cal_dir = (run_dir / "predictions" / "calibrated" / str(best_cal) / "test") if best_cal else None
-        if not raw_dir.exists() or not (raw_dir / "ecg_ids.npy").exists():
+        if not all((raw_dir / filename).is_file() for filename in ("ecg_ids.npy", "probabilities.npy", "labels.npy")):
             return {}
         ecg_ids = np.load(raw_dir / "ecg_ids.npy")
         raw_probs = np.load(raw_dir / "probabilities.npy")
         labels = np.load(raw_dir / "labels.npy")
-        cal_probs = (
-            np.load(cal_dir / "probabilities.npy")
-            if (cal_dir is not None and (cal_dir / "probabilities.npy").exists())
-            else raw_probs
-        )
+        has_calibrated_predictions = cal_dir is not None and (cal_dir / "probabilities.npy").is_file()
+        cal_probs = np.load(cal_dir / "probabilities.npy") if has_calibrated_predictions else raw_probs
         mapping: dict[int, dict[str, Any]] = {}
         for idx, eid in enumerate(ecg_ids):
             mapping[int(eid)] = {
                 "raw_probabilities": {TARGET_LABELS[k]: float(raw_probs[idx, k]) for k in range(len(TARGET_LABELS))},
                 "calibrated_probabilities": {TARGET_LABELS[k]: float(cal_probs[idx, k]) for k in range(len(TARGET_LABELS))},
                 "true_labels": [TARGET_LABELS[k] for k in range(len(TARGET_LABELS)) if int(labels[idx, k]) == 1],
-                "calibration_method": best_cal,
+                "calibration_method": best_cal if has_calibrated_predictions else None,
             }
         return mapping
 
@@ -315,11 +314,12 @@ class WorkbenchDataAccess:
         raw_probs = sigmoid(logits)
         cal_method, calibrator = self._get_loaded_calibrator(run_id, manifest)
         cal_probs = apply_calibrator(calibrator, logits) if calibrator is not None else raw_probs
+        calibration_unavailable = cal_method not in {None, "raw"} and calibrator is None
 
         decision_cfg = (manifest.get("config_snapshot") or {}).get("decision") or {}
         selective_info: dict[str, Any] | None = None
         thresholds_payload = _read_json_optional(self.runs_root / run_id / "decision" / "thresholds.json")
-        if decision_cfg and thresholds_payload and thresholds_payload.get("thresholds"):
+        if decision_cfg and thresholds_payload and thresholds_payload.get("thresholds") and not calibration_unavailable:
             fn_w, fp_w = weight_arrays(decision_cfg)
             raw_dec, uncertainty = uncertainty_scores(cal_probs, fn_w, fp_w)
             consistent_dec = apply_norm_consistency_rule(raw_dec)
@@ -338,7 +338,7 @@ class WorkbenchDataAccess:
         return {
             "raw_probabilities": {TARGET_LABELS[k]: float(raw_probs[0, k]) for k in range(len(TARGET_LABELS))},
             "calibrated_probabilities": {TARGET_LABELS[k]: float(cal_probs[0, k]) for k in range(len(TARGET_LABELS))},
-            "calibration_method": cal_method,
+            "calibration_method": None if calibration_unavailable else cal_method,
             "selective_decision": selective_info,
         }
 
@@ -387,31 +387,67 @@ class WorkbenchDataAccess:
             }
         )
 
-    def get_reliability_analysis(self, run_id: str) -> dict[str, Any]:
+    def get_reliability_analysis(
+        self,
+        run_id: str,
+        *,
+        calibration_method: str | None = None,
+        binning: str = "uniform",
+    ) -> dict[str, Any]:
         manifest = load_run_manifest(run_id, self.runs_root)
         run_dir = self.runs_root / run_id
         cal_val = _read_json_optional(run_dir / "calibration" / "reports.json")
         cal_test = _read_json_optional(run_dir / "calibration" / "test_reports.json")
-        rel_bins = _read_json_optional(run_dir / "calibration" / "reliability_bins.json")
+        saved_rel_bins = _read_json_optional(run_dir / "calibration" / "reliability_bins.json")
         leakage = _read_json_optional(run_dir / "calibration" / "leakage_report.json")
         selective = _read_json_optional(run_dir / "decision" / "results.json")
         thresholds = _read_json_optional(run_dir / "decision" / "thresholds.json")
         bootstrap = _read_json_optional(run_dir / "analysis" / "bootstrap_ci.json")
         raw_test_metrics = _read_json_optional(run_dir / "predictions" / "raw" / "test_metrics_raw.json")
 
-        # Compute confidence distributions per class (positives vs negatives) from real test predictions
         best_cal = (manifest.get("metrics") or {}).get("selected_calibration_method")
-        cal_dir = (run_dir / "predictions" / "calibrated" / str(best_cal) / "test") if best_cal else None
-        raw_dir = run_dir / "predictions" / "raw" / "test"
-        prob_src = cal_dir if (cal_dir is not None and (cal_dir / "probabilities.npy").exists()) else raw_dir
+        best_cal = best_cal or (cal_val or {}).get("best_method") or (saved_rel_bins or {}).get("best_method")
+        method = calibration_method or "best"
+        if method != "best" and method not in VALID_CALIBRATION_METHODS:
+            raise ValueError(f"Unknown calibration method: {method}")
+        if binning not in {"uniform", "adaptive"}:
+            raise ValueError(f"Unknown reliability binning: {binning}")
+        active_method = (best_cal or "raw") if method == "best" else method
+
+        def read_bundle(directory: Path) -> tuple[np.ndarray, np.ndarray] | None:
+            try:
+                probabilities = np.load(directory / "probabilities.npy")
+                labels = np.load(directory / "labels.npy")
+            except FileNotFoundError:
+                return None
+            if probabilities.shape != labels.shape or probabilities.ndim != 2 or probabilities.shape[1] != len(TARGET_LABELS):
+                raise ValueError(f"Invalid test prediction bundle: {directory}")
+            return (labels, probabilities) if probabilities.size else None
+
+        raw_test = read_bundle(run_dir / "predictions" / "raw" / "test")
+        active_test = (
+            raw_test if active_method == "raw"
+            else read_bundle(run_dir / "predictions" / "calibrated" / active_method / "test")
+        )
+        num_bins = int((manifest.get("config_snapshot") or {}).get("calibration", {}).get(
+            "num_bins", (saved_rel_bins or {}).get("num_bins", 10)
+        ))
+        saved_matches = binning == "uniform" and (saved_rel_bins or {}).get("best_method") == active_method
+        saved_classes = (saved_rel_bins or {}).get("per_class", {}) if saved_matches else {}
+        if saved_classes and active_test is None:
+            num_bins = int(saved_rel_bins.get("num_bins", num_bins))
         confidence_distributions: dict[str, Any] = {}
-        adaptive_bins: dict[str, Any] = {}
-        if prob_src.exists() and (prob_src / "probabilities.npy").exists():
-            probs = np.load(prob_src / "probabilities.npy")
-            labels = np.load(prob_src / "labels.npy")
-            raw_probs = np.load(raw_dir / "probabilities.npy") if (raw_dir / "probabilities.npy").exists() else probs
-            edges = np.linspace(0.0, 1.0, 11)
-            for idx, label in enumerate(TARGET_LABELS):
+        computed_bins: dict[str, Any] = {}
+        edges = np.linspace(0.0, 1.0, 11)
+        for idx, label in enumerate(TARGET_LABELS):
+            saved = saved_classes.get(label, {})
+            raw_bins = (
+                reliability_bins(*raw_test, class_index=idx, num_bins=num_bins, adaptive=binning == "adaptive")
+                if raw_test is not None else saved.get("raw")
+            )
+            active_bins = saved.get("calibrated")
+            if active_test is not None:
+                labels, probs = active_test
                 pos_hist, _ = np.histogram(probs[labels[:, idx] == 1, idx], bins=edges)
                 neg_hist, _ = np.histogram(probs[labels[:, idx] == 0, idx], bins=edges)
                 confidence_distributions[label] = {
@@ -419,19 +455,28 @@ class WorkbenchDataAccess:
                     "positive_counts": pos_hist.tolist(),
                     "negative_counts": neg_hist.tolist(),
                 }
-                if rel_bins is None:
-                    adaptive_bins[label] = {
-                        "raw": reliability_bins(labels, raw_probs, class_index=idx, num_bins=10),
-                        "calibrated": reliability_bins(labels, probs, class_index=idx, num_bins=10),
-                    }
-            if rel_bins is None:
-                rel_bins = {"split": "test", "best_method": best_cal, "num_bins": 10, "per_class": adaptive_bins}
+                active_bins = raw_bins if active_method == "raw" else reliability_bins(
+                    labels, probs, class_index=idx, num_bins=num_bins, adaptive=binning == "adaptive"
+                )
+            if raw_bins or active_bins:
+                computed_bins[label] = {"raw": raw_bins, "calibrated": active_bins}
+
+        rel_bins = {
+            "split": "test",
+            "best_method": best_cal,
+            "active_method": active_method,
+            "binning": binning,
+            "num_bins": num_bins,
+            "per_class": computed_bins,
+        } if computed_bins else None
 
         return sanitize_json(
             {
                 "run_id": run_id,
                 "model_name": (manifest.get("model_identity") or {}).get("model_name"),
                 "execution_tier": manifest.get("execution_tier"),
+                "active_calibration_method": active_method,
+                "binning": binning,
                 "raw_test_metrics": raw_test_metrics,
                 "calibration_val_reports": cal_val,
                 "calibration_test_reports": cal_test,
@@ -470,6 +515,10 @@ class WorkbenchDataAccess:
         manifest = load_run_manifest(run_id, self.runs_root)
         run_dir = self.runs_root / run_id
         xai_dir = run_dir / "explanations"
+        if method not in {"ig", "gx", "occlusion"}:
+            raise ValueError(f"Unknown attribution method: {method}")
+        if target_label and target_label.upper() not in TARGET_LABELS:
+            raise ValueError(f"Unknown attribution target: {target_label}")
         stability_path = xai_dir / "stability.csv"
         stability_rows = pd.read_csv(stability_path).to_dict(orient="records") if stability_path.exists() else []
         sanity = _read_json_optional(xai_dir / "sanity_checks.json")
@@ -490,25 +539,35 @@ class WorkbenchDataAccess:
             selected_label = selected_label or saved_items[0]["target_label"]
 
         attribution_payload: dict[str, Any] | None = None
-        if selected_ecg is not None:
+        unavailable_reason: str | None = None
+        model_name = (manifest.get("model_identity") or {}).get("model_name")
+        if selected_ecg is not None and model_name != "xgboost":
             selected_label = selected_label or "MI"
             stem = f"ecg_{selected_ecg}_{selected_label.lower()}"
-            signal, meta, _ = self._load_signal_array(run_id, selected_ecg)
             attr_path = xai_dir / f"{stem}_{method}.npy"
             attr_arr: np.ndarray | None = None
             source = "saved_artifact"
-            if attr_path.exists():
-                attr_arr = np.load(attr_path).astype(np.float32)
-            elif (manifest.get("model_identity") or {}).get("model_name") != "xgboost":
-                kind, model = self._get_loaded_model(run_id, manifest)
-                if kind == "torch":
+            try:
+                signal, meta, _ = self._load_signal_array(run_id, selected_ecg)
+                if attr_path.is_file():
+                    attr_arr = np.load(attr_path).astype(np.float32)
+                else:
+                    _, model = self._get_loaded_model(run_id, manifest)
                     sig_t = torch.tensor(signal[None, ...], dtype=torch.float32)
-                    t_cls = TARGET_LABELS.index(selected_label) if selected_label in TARGET_LABELS else 0
+                    t_cls = TARGET_LABELS.index(selected_label)
                     if method == "gx":
                         attr_arr = compute_gradient_x_input(model, sig_t, target_class=t_cls).cpu().numpy()[0]
+                    elif method == "occlusion":
+                        window = min(100, signal.shape[-1])
+                        attr_arr = compute_occlusion(
+                            model, sig_t, target_class=t_cls,
+                            sliding_window_shapes=(1, window), strides=(1, max(1, window // 2)),
+                        ).cpu().numpy()[0]
                     else:
                         attr_arr = compute_integrated_gradients(model, sig_t, target_class=t_cls, steps=16).cpu().numpy()[0]
                     source = "computed_on_demand_from_checkpoint"
+            except FileNotFoundError as exc:
+                unavailable_reason = str(exc)
 
             if attr_arr is not None:
                 lead_imp = np.abs(attr_arr).sum(axis=1)
@@ -530,10 +589,11 @@ class WorkbenchDataAccess:
         return sanitize_json(
             {
                 "run_id": run_id,
-                "model_name": (manifest.get("model_identity") or {}).get("model_name"),
+                "model_name": model_name,
                 "execution_tier": manifest.get("execution_tier"),
                 "saved_attributions": saved_items,
                 "selected_attribution": attribution_payload,
+                "attribution_unavailable_reason": unavailable_reason,
                 "stability_rows": stability_rows,
                 "sanity_checks": sanity,
                 "failure_analysis": failures,
