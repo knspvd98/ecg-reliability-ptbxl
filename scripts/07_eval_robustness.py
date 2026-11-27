@@ -27,6 +27,11 @@ from ecg_reliability.robustness.evaluate_robustness import (
     evaluate_decision_layer_under_perturbations,
     evaluate_under_perturbations,
 )
+from ecg_reliability.robustness.perturbations import (
+    MIT_BIH_NSTDB_REFERENCE,
+    build_severity_perturbation_suite,
+    load_nstdb_noise_reference,
+)
 from ecg_reliability.runtime import (
     calibration_dir,
     checkpoint_dir,
@@ -67,6 +72,8 @@ def main() -> None:
     parser.add_argument("--calibration-method", default=None)
     parser.add_argument("--selection-manifest", default="outputs/summary/model_selection.json")
     parser.add_argument("--synthetic-smoke", action="store_true")
+    parser.add_argument("--severity-suite", action="store_true", help="Evaluate full multi-severity ECG perturbation suite.")
+    parser.add_argument("--nstdb-root", default=None, help="Optional local path to MIT-BIH Noise Stress Test Database.")
     args = parser.parse_args()
 
     config = load_runtime_config(args.config, args.override)
@@ -107,23 +114,44 @@ def main() -> None:
     def predict_raw_probabilities_fn(batch: np.ndarray) -> np.ndarray:
         return sigmoid(predict_logits_fn(batch))
 
-    perturbations = {}
-    rob_cfg = config["robustness"]["perturbations"]
-    if rob_cfg["lead_dropout_single"]["enabled"]:
-        perturbations["lead_dropout_single"] = {"lead_index": 0}
-    if rob_cfg["lead_dropout_group"]["enabled"]:
-        for group in rob_cfg["lead_dropout_group"]["groups"]:
-            perturbations[f"lead_dropout_group_{group}"] = {"group": group}
-    if rob_cfg["gaussian_noise"]["enabled"]:
-        perturbations["gaussian_noise"] = {"std": rob_cfg["gaussian_noise"]["std"]}
-    if rob_cfg["baseline_wander"]["enabled"]:
-        perturbations["baseline_wander"] = {
-            "amplitude": rob_cfg["baseline_wander"]["amplitude"],
-            "frequency_hz": rob_cfg["baseline_wander"]["frequency_hz"],
-            "sampling_rate": config["data"]["sampling_rate"],
-        }
-    if rob_cfg["amplitude_scaling"]["enabled"]:
-        perturbations["amplitude_scaling"] = {"scale": rob_cfg["amplitude_scaling"]["scale_min"]}
+    if args.severity_suite:
+        perturbations = build_severity_perturbation_suite(
+            sampling_rate=int(config["data"]["sampling_rate"]),
+            seed=int(config["project"]["seed"]),
+        )
+    else:
+        perturbations = {}
+        rob_cfg = config["robustness"]["perturbations"]
+        if rob_cfg["lead_dropout_single"]["enabled"]:
+            perturbations["lead_dropout_single"] = {"lead_index": 0}
+        if rob_cfg["lead_dropout_group"]["enabled"]:
+            for group in rob_cfg["lead_dropout_group"]["groups"]:
+                perturbations[f"lead_dropout_group_{group}"] = {"group": group}
+        if rob_cfg["gaussian_noise"]["enabled"]:
+            perturbations["gaussian_noise"] = {
+                "std": rob_cfg["gaussian_noise"]["std"],
+                "seed": int(config["project"]["seed"]),
+            }
+        if rob_cfg["baseline_wander"]["enabled"]:
+            perturbations["baseline_wander"] = {
+                "amplitude": rob_cfg["baseline_wander"]["amplitude"],
+                "frequency_hz": rob_cfg["baseline_wander"]["frequency_hz"],
+                "sampling_rate": config["data"]["sampling_rate"],
+            }
+        if rob_cfg["amplitude_scaling"]["enabled"]:
+            perturbations["amplitude_scaling"] = {"scale": rob_cfg["amplitude_scaling"]["scale_min"]}
+        if rob_cfg.get("powerline_interference", {}).get("enabled", False):
+            perturbations["powerline_interference"] = {
+                "amplitude": rob_cfg["powerline_interference"]["amplitude"],
+                "frequency_hz": rob_cfg["powerline_interference"]["frequency_hz"],
+                "sampling_rate": config["data"]["sampling_rate"],
+            }
+        if rob_cfg.get("muscle_noise", {}).get("enabled", False):
+            perturbations["muscle_noise"] = {
+                "snr_db": rob_cfg["muscle_noise"].get("snr_db", 12.0),
+                "sampling_rate": config["data"]["sampling_rate"],
+                "seed": int(config["project"]["seed"]),
+            }
 
     stage_timings: dict[str, float] = {}
     with StageTimer("robustness_eval", stage_timings):
@@ -162,6 +190,8 @@ def main() -> None:
     results["decision_layer_available"] = bool(decision_results["decision_layer_available"])
     results["decision_layer"] = decision_results
     results["warnings"] = warnings
+    results["scientific_scope"] = "synthetic_stress_test_not_clinical_claim"
+    results["nstdb_reference"] = load_nstdb_noise_reference(args.nstdb_root) if args.nstdb_root else MIT_BIH_NSTDB_REFERENCE
 
     out_dir = robustness_dir(model_name)
     out_dir.mkdir(parents=True, exist_ok=True)

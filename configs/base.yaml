@@ -90,6 +90,13 @@ robustness:
       enabled: true
       scale_min: 0.9
       scale_max: 1.1
+    powerline_interference:
+      enabled: true
+      amplitude: 0.15
+      frequency_hz: 50.0
+    muscle_noise:
+      enabled: true
+      snr_db: 12.0
 
 explainability:
   methods: [integrated_gradients, gradient_input, occlusion]

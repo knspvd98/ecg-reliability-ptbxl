@@ -13,9 +13,11 @@ import torch
 from ecg_reliability.data.labels import TARGET_LABELS
 from ecg_reliability.decision.harm import weight_arrays
 from ecg_reliability.evaluation.model_selection import resolve_calibration_method, resolve_selected_model
+from ecg_reliability.evaluation.reports import save_json
 from ecg_reliability.explainability.gradient_input import compute_gradient_x_input
 from ecg_reliability.explainability.integrated_gradients import compute_integrated_gradients
 from ecg_reliability.explainability.occlusion import compute_occlusion
+from ecg_reliability.explainability.sanity_checks import run_attribution_sanity_suite
 from ecg_reliability.explainability.selection import build_xai_selection_manifests
 from ecg_reliability.explainability.stability import (
     cosine_similarity,
@@ -120,8 +122,10 @@ def main() -> None:
     target_manifest.to_csv(out_dir / "xai_target_manifest.csv", index=False)
 
     summary_rows = []
+    sanity_checks = []
     stage_timings: dict[str, float] = {}
     occlusion_budget = int(config["explainability"].get("occlusion_num_samples", 0))
+    sanity_budget = int(config["explainability"].get("sanity_check_samples", 2))
     with StageTimer("xai_generation", stage_timings):
         for target_idx, row in target_manifest.iterrows():
             ecg_id = int(row["ecg_id"])
@@ -151,7 +155,7 @@ def main() -> None:
 
             ig_np = ig.cpu().numpy()[0]
             gx_np = gx.cpu().numpy()[0]
-            noisy = gaussian_noise(signal_np, std=0.02)
+            noisy = gaussian_noise(signal_np, std=0.02, seed=int(config["project"]["seed"]))
             dropped = lead_dropout_single(signal_np, lead_index=0)
             noisy_t = torch.tensor(noisy[None, ...], dtype=torch.float32, device=device)
             dropped_t = torch.tensor(dropped[None, ...], dtype=torch.float32, device=device)
@@ -165,6 +169,21 @@ def main() -> None:
                 np.save(out_dir / f"{stem}_occlusion.npy", occ_np.astype(np.float32))
             if target_idx == 0:
                 plot_ecg_with_attribution(signal_np, ig_np, out_dir / "example_xai.png")
+
+            if target_idx < sanity_budget:
+                check = run_attribution_sanity_suite(
+                    model,
+                    signal,
+                    ig,
+                    target_class=target_class,
+                    attr_fn=lambda m, x, c: compute_integrated_gradients(m, x, target_class=c, steps=16),
+                    method_name="integrated_gradients",
+                    steps=6,
+                    seed=int(config["project"]["seed"]),
+                )
+                check["ecg_id"] = ecg_id
+                check["target_label"] = target_label
+                sanity_checks.append(check)
 
             summary_rows.append(
                 {
@@ -183,9 +202,11 @@ def main() -> None:
             )
 
     pd.DataFrame(summary_rows).to_csv(out_dir / "stability.csv", index=False)
+    save_json(out_dir / "sanity_checks.json", {"selection_summary": selection_summary, "checks": sanity_checks})
     runtime_report = {
         "number_of_samples": int(selection_summary["selected_sample_count"]),
         "number_of_targets": int(selection_summary["selected_target_count"]),
+        "sanity_check_count": int(len(sanity_checks)),
         "device": str(device),
         "elapsed_seconds": float(stage_timings["xai_generation"]),
         "samples_per_second": float(len(summary_rows) / max(stage_timings["xai_generation"], 1e-9)),

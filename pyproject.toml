@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ecg-reliability-ptbxl"
-version = "0.1.0"
-description = "Executable PTB-XL reliability pipeline for calibrated multi-label ECG diagnosis."
+version = "0.2.0"
+description = "Reproducible ECG machine learning reliability research platform and interactive workbench for PTB-XL."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Dias Konyspayev" }]
-keywords = ["ecg", "machine-learning", "calibration", "selective-prediction", "ptb-xl"]
+keywords = ["ecg", "machine-learning", "calibration", "selective-prediction", "ptb-xl", "reliability"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
@@ -43,11 +43,17 @@ dev = [
   "ruff>=0.8.0",
 ]
 
+[project.scripts]
+ecg-reliability = "ecg_reliability.cli:main"
+
 [tool.setuptools]
 include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["ecg_reliability*"]
+
+[tool.setuptools.package-data]
+"ecg_reliability.workbench" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
